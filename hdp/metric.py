@@ -198,18 +198,22 @@ def heatwave_avi(hw_ts_intensity: np.ndarray, season_ranges: np.ndarray) -> np.n
         end_points = season_ranges[y]
         hw_ts_slice = hw_ts_intensity[end_points[0] : end_points[1]]
 
-        unique_indices = np.unique(hw_ts_slice)
-        if unique_indices.size == 1:  # if there are no heatwave days
+        # unique_indices = np.unique(hw_ts_slice)
+        # if unique_indices.size == 1:  # if there are no heatwave days
+        if np.isnan(hw_ts_slice).all():
             output[y] = 0
         else:
             # ignores the masked values
-            output[y] = hw_ts_slice.mean()
+            output[y] = np.nanmean(hw_ts_slice)
     return output
 
 
 @nb.njit
 def heatwave_ava(
-    hw_ts_intensity: np.ndarray, season_ranges: np.ndarray, threshold: np.ndarray
+    hw_ts_intensity: np.ndarray,
+    season_ranges: np.ndarray,
+    threshold: np.ndarray,
+    doy_map: np.ndarray,
 ) -> np.ndarray:
     """
     Measures the average intensity anomaly of heatwave days in each season of a given heatwave index time series. Anomalies are taken with respect to a threshold.
@@ -221,24 +225,31 @@ def heatwave_ava(
     :type season_ranges: np.ndarray
     :param threshold: Threshold for extreme heat.
     :type threshold: np.ndarray
+    :param doy_map: Mapping from index in times array to day of year value.
+    :type doy_map: np.ndarray
     :return: Average Heatwave Intensity per heatwave season.
     :rtype: np.ndarray
     """
     # output of size n_years
-    output = np.zeros(season_ranges.shape[0], dtype=nb.int64)
+    output = np.zeros(season_ranges.shape[0], dtype=np.float64)
 
     for y in range(season_ranges.shape[0]):
         end_points = season_ranges[y]
         hw_ts_slice = hw_ts_intensity[end_points[0] : end_points[1]]
-        threshold_slice = threshold[end_points[0] : end_points[1]]
 
-        unique_indices = np.unique(hw_ts_slice)
-        if unique_indices.size == 1:  # if there are no heatwave days
+        # find the corresponding doy for hw_ts_slice
+        doy_slice = doy_map[end_points[0] : end_points[1]]
+        # threshold_slice = threshold[doy_slice[0] : doy_slice[-1] + 1]
+        threshold_slice = np.array([threshold[d] for d in doy_slice])
+
+        # unique_indices = np.unique(hw_ts_slice)
+        # if unique_indices.size == 1:  # if there are no heatwave days
+        if np.isnan(hw_ts_slice).all():
             output[y] = 0
         else:
-            hw_ts_anom_slice = hw_ts_slice = threshold_slice
+            hw_ts_anom_slice = hw_ts_slice - threshold_slice
             # ignores the masked values
-            output[y] = hw_ts_anom_slice.mean()
+            output[y] = np.nanmean(hw_ts_anom_slice)
     return output
 
 
@@ -421,9 +432,9 @@ def compute_heatwave_metrics(
     # hw_ts_intensity = np.ma.masked_where(hw_ts == 0, measure) # numba doesn't support ma
     hw_ts_intensity = np.where(hw_ts == 0, np.nan, measure)
     hw_avi = heatwave_avi(hw_ts_intensity, season_ranges)
-    hw_ava = heatwave_ava(hw_ts_intensity, season_ranges, threshold)
+    hw_ava = heatwave_ava(hw_ts_intensity, season_ranges, threshold, doy_map)
 
-    output = np.zeros((4,) + hwf.shape, dtype=nb.int64)
+    output = np.zeros((6,) + hwf.shape, dtype=nb.float64)
     output[0] = hwf
     output[1] = hwn
     output[2] = hwd
@@ -456,8 +467,9 @@ def compute_heatwave_metrics_wrapper(measure, threshold, doy_map, hw_definitions
                 hw_def[1],
                 hw_def[2],
                 season_ranges,
-                vectorize=True,
-                dask="parallelized",
+                vectorize=True,  # nh temp change
+                dask="parallelized",  # nh temp change
+                # dask="allowed",
                 input_core_dims=[
                     ["time"],
                     ["doy"],
@@ -468,7 +480,7 @@ def compute_heatwave_metrics_wrapper(measure, threshold, doy_map, hw_definitions
                     ["year", "end_points"],
                 ],
                 output_core_dims=[["metric", "year"]],
-                output_dtypes=[int],
+                output_dtypes=[float],
                 dask_gufunc_kwargs=dict(output_sizes=dict(metric=6)),
             )
             def_datasets.append(metric_data)
