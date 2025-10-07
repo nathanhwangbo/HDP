@@ -9,7 +9,9 @@ import dask.array as da
 
 
 @nb.njit
-def index_heatwaves(hot_days_ts: np.ndarray, min_duration: int, max_break: int, max_subs: int) -> np.ndarray:
+def index_heatwaves(
+    hot_days_ts: np.ndarray, min_duration: int, max_break: int, max_subs: int
+) -> np.ndarray:
     """
     Identifies the heatwaves in the timeseries using the specified heatwave definition
 
@@ -36,11 +38,15 @@ def index_heatwaves(hot_days_ts: np.ndarray, min_duration: int, max_break: int, 
     sub_events = 0
     hw_indices = np.zeros(diff_ts.size, dtype=nb.int64)
 
-    for i in range(diff_indices.size-1):
+    for i in range(diff_indices.size - 1):
         index = diff_indices[i]
-        next_index = diff_indices[i+1]
+        next_index = diff_indices[i + 1]
 
-        if diff_ts[index] == 1 and next_index - index >= min_duration and not in_heatwave:
+        if (
+            diff_ts[index] == 1
+            and next_index - index >= min_duration
+            and not in_heatwave
+        ):
             current_hw_index += 1
             in_heatwave = True
             hw_indices[index:next_index] = current_hw_index
@@ -57,7 +63,7 @@ def index_heatwaves(hot_days_ts: np.ndarray, min_duration: int, max_break: int, 
                 in_heatwave = False
             sub_events = 0
 
-    return hw_indices[0:hw_indices.size-1]
+    return hw_indices[0 : hw_indices.size - 1]
 
 
 @nb.njit
@@ -76,7 +82,7 @@ def heatwave_number(hw_ts: np.ndarray, season_ranges: np.ndarray) -> np.ndarray:
     output = np.zeros(season_ranges.shape[0], dtype=nb.int64)
     for y in range(season_ranges.shape[0]):
         end_points = season_ranges[y]
-        uniques = np.unique(hw_ts[end_points[0]:end_points[1]])
+        uniques = np.unique(hw_ts[end_points[0] : end_points[1]])
         output[y] = uniques[uniques != 0].size
 
     return output
@@ -98,7 +104,7 @@ def heatwave_frequency(hw_ts: np.ndarray, season_ranges: np.ndarray) -> np.ndarr
     output = np.zeros(season_ranges.shape[0], dtype=nb.int64)
     for y in range(season_ranges.shape[0]):
         end_points = season_ranges[y]
-        output[y] = np.sum(hw_ts[end_points[0]:end_points[1]] > 0, dtype=nb.int64)
+        output[y] = np.sum(hw_ts[end_points[0] : end_points[1]] > 0, dtype=nb.int64)
     return output
 
 
@@ -118,21 +124,21 @@ def heatwave_duration(hw_ts: np.ndarray, season_ranges: np.ndarray) -> np.ndarra
     output = np.zeros(season_ranges.shape[0], dtype=nb.int64)
     for y in range(season_ranges.shape[0]):
         end_points = season_ranges[y]
-        hw_ts_slice = hw_ts[end_points[0]:end_points[1]]
+        hw_ts_slice = hw_ts[end_points[0] : end_points[1]]
         unique_indices = np.unique(hw_ts_slice)
-        
+
         if unique_indices.size == 1:
             output[y] = 0
         else:
             unique_indices = unique_indices[1:]
-            
+
         hw_lengths = np.zeros(unique_indices.size, dtype=nb.int64)
         for index, value in enumerate(unique_indices):
             if value != 0:
                 for day in hw_ts_slice:
                     if day == value:
                         hw_lengths[index] += 1
-        
+
         output[y] = np.max(hw_lengths)
     return output
 
@@ -153,24 +159,88 @@ def heatwave_average(hw_ts: np.ndarray, season_ranges: np.ndarray) -> np.ndarray
     output = np.zeros(season_ranges.shape[0], dtype=nb.float64)
     for y in range(season_ranges.shape[0]):
         end_points = season_ranges[y]
-        hw_ts_slice = hw_ts[end_points[0]:end_points[1]]
+        hw_ts_slice = hw_ts[end_points[0] : end_points[1]]
         unique_indices = np.unique(hw_ts_slice)
-        
+
         if unique_indices.size == 1:
             output[y] = 0
         else:
             unique_indices = unique_indices[1:]
-            
+
         hw_lengths = np.zeros(unique_indices.size, dtype=nb.int64)
         for index, value in enumerate(unique_indices):
             if value != 0:
                 for day in hw_ts_slice:
                     if day == value:
                         hw_lengths[index] += 1
-        
+
         output[y] = np.mean(hw_lengths)
     return output
-    
+
+
+@nb.njit
+def heatwave_avi(hw_ts_intensity: np.ndarray, season_ranges: np.ndarray) -> np.ndarray:
+    """
+    Measures the average max temperature of heatwave days in each season of a given heatwave index time series.
+    Average Heatwave Intensity, commonly abbreviated as AVI.
+
+    :param hw_ts_intensity: Timeseries of heat measurement which is zero is non-heatwave days.
+    :type hw_ts_intensity: np.ndarray
+    :param season_ranges: Range of array indices, corresponding to heatwave season, in indexed heatwave day timeseries to count.
+    :type season_ranges: np.ndarray
+    :return: Average Heatwave Intensity per heatwave season.
+    :rtype: np.ndarray
+    """
+    # output of size n_years
+    output = np.zeros(season_ranges.shape[0], dtype=nb.int64)
+
+    for y in range(season_ranges.shape[0]):
+        end_points = season_ranges[y]
+        hw_ts_slice = hw_ts_intensity[end_points[0] : end_points[1]]
+
+        unique_indices = np.unique(hw_ts_slice)
+        if unique_indices.size == 1:  # if there are no heatwave days
+            output[y] = 0
+        else:
+            # ignores the masked values
+            output[y] = hw_ts_slice.mean()
+    return output
+
+
+@nb.njit
+def heatwave_ava(
+    hw_ts_intensity: np.ndarray, season_ranges: np.ndarray, threshold: np.ndarray
+) -> np.ndarray:
+    """
+    Measures the average intensity anomaly of heatwave days in each season of a given heatwave index time series. Anomalies are taken with respect to a threshold.
+    Average Heatwave Anomaly, commonly abbreviated as AVA.
+
+    :param hw_ts_intensity: Timeseries of heat measurement which is zero is non-heatwave days.
+    :type hw_ts_intensity: np.ndarray
+    :param season_ranges: Range of array indices, corresponding to heatwave season, in indexed heatwave day timeseries to count.
+    :type season_ranges: np.ndarray
+    :param threshold: Threshold for extreme heat.
+    :type threshold: np.ndarray
+    :return: Average Heatwave Intensity per heatwave season.
+    :rtype: np.ndarray
+    """
+    # output of size n_years
+    output = np.zeros(season_ranges.shape[0], dtype=nb.int64)
+
+    for y in range(season_ranges.shape[0]):
+        end_points = season_ranges[y]
+        hw_ts_slice = hw_ts_intensity[end_points[0] : end_points[1]]
+        threshold_slice = threshold[end_points[0] : end_points[1]]
+
+        unique_indices = np.unique(hw_ts_slice)
+        if unique_indices.size == 1:  # if there are no heatwave days
+            output[y] = 0
+        else:
+            hw_ts_anom_slice = hw_ts_slice = threshold_slice
+            # ignores the masked values
+            output[y] = hw_ts_anom_slice.mean()
+    return output
+
 
 def get_range_indices(times: np.ndarray, start: tuple, end: tuple) -> np.ndarray:
     """
@@ -226,7 +296,7 @@ def compute_hemisphere_ranges(measure: xarray.DataArray) -> xarray.DataArray:
     start_indentified = False
     for year_index, n_end_points in enumerate(north_ranges):
         end_points = np.concatenate([n_end_points, south_ranges[year_index]])
-        
+
         if -1 in end_points and not start_indentified:
             slice_start = year_index
             continue
@@ -238,11 +308,16 @@ def compute_hemisphere_ranges(measure: xarray.DataArray) -> xarray.DataArray:
             break
 
     north_ranges = north_ranges[slice_start:slice_end]
-    south_ranges = south_ranges[slice_start:slice_end]    
+    south_ranges = south_ranges[slice_start:slice_end]
     years = np.arange(measure.time.values[0].year, measure.time.values[-1].year + 1, 1)
-    years = years[slice_start:slice_end]    
-    
-    ranges = np.zeros((north_ranges.shape[0], 2, measure.lat.size, measure.lon.size), dtype=int) - 1
+    years = years[slice_start:slice_end]
+
+    ranges = (
+        np.zeros(
+            (north_ranges.shape[0], 2, measure.lat.size, measure.lon.size), dtype=int
+        )
+        - 1
+    )
 
     for i in range(measure.lat.size):
         for j in range(measure.lon.size):
@@ -250,16 +325,17 @@ def compute_hemisphere_ranges(measure: xarray.DataArray) -> xarray.DataArray:
                 ranges[:, :, i, j] = south_ranges
             else:
                 ranges[:, :, i, j] = north_ranges
-                
 
-    return xarray.DataArray(data=ranges,
-                            dims=["year", "end_points", "lat", "lon"],
-                            coords={
-                                "year": years,
-                                "end_points": ["start", "finish"],
-                                "lat": measure.lat.values,
-                                "lon": measure.lon.values
-                            })
+    return xarray.DataArray(
+        data=ranges,
+        dims=["year", "end_points", "lat", "lon"],
+        coords={
+            "year": years,
+            "end_points": ["start", "finish"],
+            "lat": measure.lat.values,
+            "lon": measure.lon.values,
+        },
+    )
 
 
 def build_doy_map(times: np.ndarray) -> np.ndarray:
@@ -278,7 +354,9 @@ def build_doy_map(times: np.ndarray) -> np.ndarray:
 
 
 @nb.njit
-def indicate_hot_days(measure: np.ndarray, threshold: np.ndarray, doy_map: np.ndarray) -> np.ndarray:
+def indicate_hot_days(
+    measure: np.ndarray, threshold: np.ndarray, doy_map: np.ndarray
+) -> np.ndarray:
     """
     Determines whether each time step in a heat measure exceeds the threshold.
 
@@ -302,9 +380,15 @@ def indicate_hot_days(measure: np.ndarray, threshold: np.ndarray, doy_map: np.nd
 
 
 @nb.njit
-def compute_heatwave_metrics(measure: np.ndarray, threshold: np.ndarray, doy_map: np.ndarray,
-                             min_duration: int, max_break: int, max_subs: int,
-                             season_ranges: np.ndarray) -> np.ndarray:
+def compute_heatwave_metrics(
+    measure: np.ndarray,
+    threshold: np.ndarray,
+    doy_map: np.ndarray,
+    min_duration: int,
+    max_break: int,
+    max_subs: int,
+    season_ranges: np.ndarray,
+) -> np.ndarray:
     """
     Computes HWN, HWF, HWD, and HWA metrics for a given measure, threshold, and definition. Additional parameters can be used to fine tune the analysis.
     This is the Numba-compiled function that is parallelized with Dask and formatted into a more user-friendly format by hdp.metrics.compute_individual_metrics
@@ -321,7 +405,7 @@ def compute_heatwave_metrics(measure: np.ndarray, threshold: np.ndarray, doy_map
     :type max_break: int
     :param max_subs: Maximum number of subsequent heatwaves.
     :type max_subs: int
-    :param season_ranges: 
+    :param season_ranges:
     :type season_ranges: np.ndarray
     :return: Array of equal number of dimensions to measure and an additional dimension containing each heatwave metric: HWN, HWF, HWD, HWA
     :rtype: np.ndarray
@@ -332,12 +416,21 @@ def compute_heatwave_metrics(measure: np.ndarray, threshold: np.ndarray, doy_map
     hwn = heatwave_number(hw_ts, season_ranges)
     hwd = heatwave_duration(hw_ts, season_ranges)
     hwa = heatwave_average(hw_ts, season_ranges)
-    
+
+    # add intensity metrics
+    # hw_ts_intensity = np.ma.masked_where(hw_ts == 0, measure) # numba doesn't support ma
+    hw_ts_intensity = np.where(hw_ts == 0, np.nan, measure)
+    hw_avi = heatwave_avi(hw_ts_intensity, season_ranges)
+    hw_ava = heatwave_ava(hw_ts_intensity, season_ranges, threshold)
+
     output = np.zeros((4,) + hwf.shape, dtype=nb.int64)
     output[0] = hwf
     output[1] = hwn
     output[2] = hwd
     output[3] = hwa
+
+    output[4] = hw_avi
+    output[5] = hw_ava
     return output
 
 
@@ -346,30 +439,50 @@ def compute_heatwave_metrics_wrapper(measure, threshold, doy_map, hw_definitions
 
     def_coords = xarray.DataArray(
         [f"{hw_def[0]}-{hw_def[1]}-{hw_def[2]}" for hw_def in hw_definitions],
-        dims=["definition"]
+        dims=["definition"],
     )
-    perc_coords = xarray.DataArray(
-        threshold.percentile.values,
-        dims=["percentile"]
-    )
+    perc_coords = xarray.DataArray(threshold.percentile.values, dims=["percentile"])
 
     perc_datasets = []
     for perc in threshold.percentile.values:
         def_datasets = []
         for hw_def in hw_definitions:
-            metric_data = xarray.apply_ufunc(compute_heatwave_metrics, measure, threshold.sel(percentile=perc), doy_map,
-                                             hw_def[0], hw_def[1], hw_def[2],
-                                             season_ranges,
-                                             vectorize=True, dask="parallelized",
-                                             input_core_dims=[["time"], ["doy"], ["time"], [], [], [], ["year", "end_points"]],
-                                             output_core_dims=[["metric", "year"]],
-                                             output_dtypes=[int], dask_gufunc_kwargs=dict(output_sizes=dict(metric=4)))
+            metric_data = xarray.apply_ufunc(
+                compute_heatwave_metrics,
+                measure,
+                threshold.sel(percentile=perc),
+                doy_map,
+                hw_def[0],
+                hw_def[1],
+                hw_def[2],
+                season_ranges,
+                vectorize=True,
+                dask="parallelized",
+                input_core_dims=[
+                    ["time"],
+                    ["doy"],
+                    ["time"],
+                    [],
+                    [],
+                    [],
+                    ["year", "end_points"],
+                ],
+                output_core_dims=[["metric", "year"]],
+                output_dtypes=[int],
+                dask_gufunc_kwargs=dict(output_sizes=dict(metric=6)),
+            )
             def_datasets.append(metric_data)
         perc_datasets.append(xarray.concat(def_datasets, dim=def_coords))
     return xarray.concat(perc_datasets, dim=perc_coords)
 
 
-def compute_individual_metrics(measure: xarray.DataArray, threshold: xarray.DataArray, hw_definitions: list, include_threshold: bool=True, check_variables: bool=True) -> xarray.Dataset:
+def compute_individual_metrics(
+    measure: xarray.DataArray,
+    threshold: xarray.DataArray,
+    hw_definitions: list,
+    include_threshold: bool = True,
+    check_variables: bool = True,
+) -> xarray.Dataset:
     """
     Computes HWN, HWF, HWD, and HWA heatwave metrics for an individual parameter configuration of measure, threshold, and definition.
 
@@ -394,26 +507,25 @@ def compute_individual_metrics(measure: xarray.DataArray, threshold: xarray.Data
     if check_variables:
         assert "hdp_type" in threshold.attrs
         assert threshold.attrs["hdp_type"] == "threshold"
-        assert threshold.attrs["baseline_variable"] == measure.attrs["baseline_variable"]
+        assert (
+            threshold.attrs["baseline_variable"] == measure.attrs["baseline_variable"]
+        )
         assert threshold.attrs["baseline_calendar"] == measure.time.values[0].calendar
 
     combined_history = ""
     if "history" in measure.attrs:
         for entry in measure.attrs["history"].split("\n"):
-            if entry != '':
-                combined_history += (f"(Measure) {entry}\n")
+            if entry != "":
+                combined_history += f"(Measure) {entry}\n"
     if "history" in threshold.attrs:
         for entry in threshold.attrs["history"].split("\n"):
-            if entry != '':
-                combined_history += (f"(Threshold) {entry}\n")
+            if entry != "":
+                combined_history += f"(Threshold) {entry}\n"
 
     season_ranges = compute_hemisphere_ranges(measure)
 
-    times = measure.time.values   
-    doy_map = xarray.DataArray(
-        data=build_doy_map(times),
-        coords={"time": times}
-    )
+    times = measure.time.values
+    doy_map = xarray.DataArray(data=build_doy_map(times), coords={"time": times})
 
     da_dims = ["percentile", "definition"]
     da_shape = [threshold.percentile.size, len(hw_definitions)]
@@ -424,21 +536,21 @@ def compute_individual_metrics(measure: xarray.DataArray, threshold: xarray.Data
             da_dims.append(dim)
             da_shape.append(measure.shape[index])
             da_chunks.append(measure.chunks[index])
-    
+
     da_dims.extend(["metric", "year"])
-    da_shape.extend([4, season_ranges.year.size])
-    da_chunks.extend([(4), (season_ranges.year.size)])
-    
+    da_shape.extend([6, season_ranges.year.size])
+    da_chunks.extend([(6), (season_ranges.year.size)])
+
     da_coords = {**measure.coords}
     da_coords.pop("time", None)
     da_coords["year"] = season_ranges.year.values
-    da_coords["definition"] = [f"{hw_def[0]}-{hw_def[1]}-{hw_def[2]}" for hw_def in hw_definitions]
+    da_coords["definition"] = [
+        f"{hw_def[0]}-{hw_def[1]}-{hw_def[2]}" for hw_def in hw_definitions
+    ]
     da_coords["percentile"] = threshold.percentile.values
 
     template = xarray.DataArray(
-        da.random.random(da_shape, chunks=da_chunks),
-        dims=da_dims,
-        coords=da_coords
+        da.random.random(da_shape, chunks=da_chunks), dims=da_dims, coords=da_coords
     )
 
     metric_data = xarray.map_blocks(
@@ -448,7 +560,7 @@ def compute_individual_metrics(measure: xarray.DataArray, threshold: xarray.Data
         kwargs={
             "hw_definitions": hw_definitions,
         },
-        template=template
+        template=template,
     )
 
     ds = xarray.Dataset(
@@ -456,80 +568,118 @@ def compute_individual_metrics(measure: xarray.DataArray, threshold: xarray.Data
             HWF=metric_data.sel(metric=0),
             HWN=metric_data.sel(metric=1),
             HWD=metric_data.sel(metric=2),
-            HWA=metric_data.sel(metric=3)
+            HWA=metric_data.sel(metric=3),
+            AVI=metric_data.sel(metric=4),
+            AVA=metric_data.sel(metric=5),
         )
     )
-    
-    start_ts = cftime.datetime(ds.year[0], 1, 1, calendar=measure.time.values[0].calendar)
-    end_ts = cftime.datetime(ds.year[-1], 1, 1, calendar=measure.time.values[0].calendar)
-    ds = ds.rename(dict(year="time")).assign_coords(dict(time=xarray.cftime_range(start_ts, end_ts, periods=ds.year.size)))
+
+    start_ts = cftime.datetime(
+        ds.year[0], 1, 1, calendar=measure.time.values[0].calendar
+    )
+    end_ts = cftime.datetime(
+        ds.year[-1], 1, 1, calendar=measure.time.values[0].calendar
+    )
+    ds = ds.rename(dict(year="time")).assign_coords(
+        dict(time=xarray.cftime_range(start_ts, end_ts, periods=ds.year.size))
+    )
 
     ds.attrs |= {
         "description": f"Heatwave metric dataset generated by Heatwave Diagnostics Package (HDP v{get_version()})",
         "hdp_version": get_version(),
-        "hdp_type": "metric"
+        "hdp_type": "metric",
     }
 
     ds["HWF"].attrs |= {
         "units": "heatwave days",
-        "long_name": "Heatwave Frequency", 
-        "description": "Number of days that fall within heatwave during a heatwave season"
+        "long_name": "Heatwave Frequency",
+        "description": "Number of days that fall within heatwave during a heatwave season",
     }
     ds["HWD"].attrs |= {
-        "units": "heatwave days", 
-        "long_name": "Heatwave Duration", 
-        "description": "Length of longest heatwave during a heatwave season"
+        "units": "heatwave days",
+        "long_name": "Heatwave Duration",
+        "description": "Length of longest heatwave during a heatwave season",
     }
     ds["HWN"].attrs |= {
-        "units": "heatwave events", 
-        "long_name": "Heatwave Number", 
-        "description": "Number of distinct heatwaves during a heatwave season"
+        "units": "heatwave events",
+        "long_name": "Heatwave Number",
+        "description": "Number of distinct heatwaves during a heatwave season",
     }
     ds["HWA"].attrs |= {
-        "units": "heatwave events", 
-        "long_name": "Heatwave Average", 
-        "description": "Average length of heatwaves during a heatwave season"
+        "units": "heatwave events",
+        "long_name": "Heatwave Average",
+        "description": "Average length of heatwaves during a heatwave season",
     }
-    ds["percentile"].attrs |= {
-        "range": "(0, 1)"
+    ds["AVI"].attrs |= {
+        "units": "avg intensity",
+        "long_name": "Heatwave Average Intensity",
+        "description": "Average daily intensity of heatwaves days during a heatwave season",
     }
+    ds["AVA"].attrs |= {
+        "units": "avg anomalies",
+        "long_name": "Heatwave Average Intensity Anomalies",
+        "description": "Average daily intensity anomalies of heatwaves during a heatwave season",
+    }
+    ds["percentile"].attrs |= {"range": "(0, 1)"}
     ds["definition"].attrs |= {
         "first_number": "Minimum number of consecutively hot days",
         "second_number": "Maximum number of break days after first wave",
-        "third_number": "Minimum number of consecutively hot days after the break"
+        "third_number": "Minimum number of consecutively hot days after the break",
     }
 
     for variable in ds:
         ds[variable].attrs["history"] = combined_history
         add_history(ds[variable], f"Heatwave metrics generated by HDP v{get_version()}")
-    
+
     return ds
 
 
-def compute_group_metrics(measures: xarray.Dataset, thresholds:xarray.Dataset, hw_definitions: list, include_threshold: bool=False, check_variables: bool=True) -> xarray.Dataset:
+def compute_group_metrics(
+    measures: xarray.Dataset,
+    thresholds: xarray.Dataset,
+    hw_definitions: list,
+    include_threshold: bool = False,
+    check_variables: bool = True,
+) -> xarray.Dataset:
     metric_sets = []
     for measure_name in list(measures.keys()):
         measure = measures[measure_name]
         for threshold_name in list(thresholds.keys()):
             threshold = thresholds[threshold_name]
-            if threshold.attrs["baseline_variable"] == measure.attrs["baseline_variable"]:
-                hw_metrics = compute_individual_metrics(measure, threshold, hw_definitions, include_threshold, check_variables)
-                var_renames = {name:f"{measure_name}.{threshold_name}.{name}" for name in list(hw_metrics.keys())}
+            if (
+                threshold.attrs["baseline_variable"]
+                == measure.attrs["baseline_variable"]
+            ):
+                hw_metrics = compute_individual_metrics(
+                    measure,
+                    threshold,
+                    hw_definitions,
+                    include_threshold,
+                    check_variables,
+                )
+                var_renames = {
+                    name: f"{measure_name}.{threshold_name}.{name}"
+                    for name in list(hw_metrics.keys())
+                }
                 metric_sets.append(hw_metrics.rename(var_renames))
 
     aggr_ds = xarray.merge(metric_sets)
-    aggr_ds.attrs["variable_naming_desc"] = "(heat measure).(threshold used).(heatwave metric)"
+    aggr_ds.attrs["variable_naming_desc"] = (
+        "(heat measure).(threshold used).(heatwave metric)"
+    )
     aggr_ds.attrs["variable_naming_delimeter"] = "."
     return aggr_ds
 
 
-def compute_metrics_io(output_path: str,
-                       measure_path: str,
-                       measure_var: str,
-                       threshold_path: str,
-                       hw_definitions: list,
-                       include_threshold: bool=False,
-                       override_threshold_var: str=None) -> None:
+def compute_metrics_io(
+    output_path: str,
+    measure_path: str,
+    measure_var: str,
+    threshold_path: str,
+    hw_definitions: list,
+    include_threshold: bool = False,
+    override_threshold_var: str = None,
+) -> None:
     """
     Computes heatwave metrics from path inputs instead of manually supplied xarray Datasets/DataArrays (automates reading from and writing to disk).
     Resulting metrics are written directly to disk instead of holding in memory.
@@ -555,34 +705,46 @@ def compute_metrics_io(output_path: str,
     measure_path = Path(measure_path)
     threshold_path = Path(threshold_path)
     check_variables = True
-    
+
     if override_threshold_var is None:
         threshold_var = f"threshold_{measure_var}"
         check_variables = False
-    
+
     if output_path.exists() and not overwrite:
-        raise FileExistsError(f"Overwrite parameter set to False and file exists at '{output_path}'.")
+        raise FileExistsError(
+            f"Overwrite parameter set to False and file exists at '{output_path}'."
+        )
 
     if not output_path.parent.exists():
         if overwrite:
             makedirs(output_path)
         else:
-            raise FileExistsError(f"Overwrite parameter set to False and directory '{output_path.parent}' does not exist.")
+            raise FileExistsError(
+                f"Overwrite parameter set to False and directory '{output_path.parent}' does not exist."
+            )
 
     if output_path.suffix not in [".zarr", ".nc"]:
-        raise ValueError(f"File type '{output_path.suffix}' from '{output_path}' not supported.")
+        raise ValueError(
+            f"File type '{output_path.suffix}' from '{output_path}' not supported."
+        )
 
     if measure_path.suffix == ".zarr" and measure_path.isdir():
         measure_data = xarray.open_zarr(measure_path)[measure_var]
     else:
         measure_data = xarray.open_dataset(measure_path)[measure_var]
-    
+
     if threshold_path.suffix == ".zarr" and threshold_path.isdir():
         threshold_data = xarray.open_zarr(threshold_path)[threshold_var]
     else:
         threshold_data = xarray.open_dataset(threshold_path)[threshold_var]
 
-    metric_ds = compute_individual_metrics(measure_data, threshold_data, hw_definitions, include_threshold=include_threshold, check_variables=check_variables)
+    metric_ds = compute_individual_metrics(
+        measure_data,
+        threshold_data,
+        hw_definitions,
+        include_threshold=include_threshold,
+        check_variables=check_variables,
+    )
 
     if output_path.suffix == ".zarr":
         metric_ds.to_zarr(output_path)
