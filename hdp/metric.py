@@ -184,7 +184,7 @@ def heatwave_avi(hw_ts_intensity: np.ndarray, season_ranges: np.ndarray) -> np.n
     Measures the average max temperature of heatwave days in each season of a given heatwave index time series.
     Average Heatwave Intensity, commonly abbreviated as AVI.
 
-    :param hw_ts_intensity: Timeseries of heat measurement which is zero is non-heatwave days.
+    :param hw_ts_intensity: Timeseries of heat measurement which is zero on non-heatwave days.
     :type hw_ts_intensity: np.ndarray
     :param season_ranges: Range of array indices, corresponding to heatwave season, in indexed heatwave day timeseries to count.
     :type season_ranges: np.ndarray
@@ -192,7 +192,7 @@ def heatwave_avi(hw_ts_intensity: np.ndarray, season_ranges: np.ndarray) -> np.n
     :rtype: np.ndarray
     """
     # output of size n_years
-    output = np.zeros(season_ranges.shape[0], dtype=nb.int64)
+    output = np.zeros(season_ranges.shape[0], dtype=nb.float64)
 
     for y in range(season_ranges.shape[0]):
         end_points = season_ranges[y]
@@ -290,38 +290,97 @@ def get_range_indices(times: np.ndarray, start: tuple, end: tuple) -> np.ndarray
     return ranges
 
 
-def compute_hemisphere_ranges(measure: xarray.DataArray) -> xarray.DataArray:
+def compute_hemisphere_ranges(
+    measure: xarray.DataArray, start=(5, 1), end=(10, 1)
+) -> xarray.DataArray:
     """
     Computes the heatwave season ranges by time index (not the timestamp, rather the index corresponding to the timestamp) for each grid cell based on whether it is in the Northern Hemisphere (boreal summer, May 1st to October 1st) or Southern Hemisphere (austral summer, November 1st to March 1st).
 
     :param measure: DataArray containing 'lat' and 'lon' variables corresponding to grid.
     :type measure: xarray.DataArray
+    :param start: a (month, day) tuple for boreal season
+    :param end: same as stary
     :return: Generates seasonal ranges by hemisphere for an arbitrary 'lat'-'lon' grid.
     :rtype: xarray.DataArray
     """
-    north_ranges = get_range_indices(measure.time.values, (5, 1), (10, 1))
-    south_ranges = get_range_indices(measure.time.values, (11, 1), (4, 1))
 
-    slice_start = 0
-    slice_end = north_ranges.size
-    start_indentified = False
+    north_ranges = get_range_indices(measure.time.values, start, end)
+    south_start = ((start[0] + 6 - 1) % 12 + 1, 1)
+    south_end = ((end[0] + 6 - 1) % 12 + 1, 1)
+    south_ranges = get_range_indices(
+        measure.time.values,
+        south_start,
+        south_end,
+    )
+
+    # find "complete years" ------------------
+    # this chunk was in the original function
+    # i think it's bugged out and odens't doing anything
+    # because north_ranges.size should be len(north_ranges)...
+    slice_start = 0  # will store the index of the first complete year
+    # slice_end = north_ranges.size # this was the og code, broken I think
+    slice_end = len(north_ranges)  # will the index of the last complete year
+    start_indentified = False  # flag for whether we've found the first complete year
+
     for year_index, n_end_points in enumerate(north_ranges):
+        # combine north and south
         end_points = np.concatenate([n_end_points, south_ranges[year_index]])
 
+        # if the first year isn't complete, then skip this year and try again
         if -1 in end_points and not start_indentified:
             slice_start = year_index
             continue
+        # if the first year is complete, then we've found the start
         elif not start_indentified:
             start_indentified = True
 
+        # if we've found the start and the last year isn't complete, then
+        # end at the year before (i.e, the last complete year)
         if start_indentified and -1 in end_points:
-            slice_end = year_index
+            # slice_end = year_index # this was the old code, but I replaced this functionality below
+            slice_end = year_index + 1
             break
 
-    north_ranges = north_ranges[slice_start:slice_end]
-    south_ranges = south_ranges[slice_start:slice_end]
+    # if southern hemipshere spans multiple years (e.g. DJF)
+    # then we will use the year from last month (i.e. December 1999 -> Feb 2000 will be DJF for year 2000)
+    # which means... that we won't have data for the the first year of data
+    # e.g. if 1999 was the first year of data, then we don't have data for DJF year 1999 (bc we don't have Dec 1998)
+
+    # if southern hemisphere spans multiple years, offset  by 1 year
+    if south_end < south_start:
+        slice_start_north = slice_start + 1
+        slice_start_south = slice_start
+
+        slice_end_north = slice_end
+        slice_end_south = slice_end - 1
+    else:
+        slice_start_north = slice_start
+        slice_start_south = slice_start
+        slice_end_north = slice_end
+        slice_end_south = slice_end
+
+    # # we know that the last year might be short, so let's fix that explicitly
+    # is_last_year_short_south = num_days_per_year_south[-1] < num_days_per_year_south[-2]
+    # is_last_year_short_north = num_days_per_year_north[-1] < num_days_per_year_north[-2]
+    # if is_last_year_short_north or is_last_year_short_south:
+    #     slice_end = slice_end - 1
+
+    # subset to complete years
+    north_ranges = north_ranges[slice_start_north:slice_end_north]
+    south_ranges = south_ranges[slice_start_south:slice_end_south]
+
+    # check that all years have the same number of days
+    num_days_per_year_north = [endpoint[1] - endpoint[0] for endpoint in north_ranges]
+    num_days_per_year_south = [endpoint[1] - endpoint[0] for endpoint in south_ranges]
+    assert len(set(num_days_per_year_north)) == 1, (
+        f"not all years in the northern hemisphere have the same number of days. here are the possible number of days: {set(num_days_per_year_north)}"
+    )
+    assert len(set(num_days_per_year_south)) == 1, (
+        f"not all years in the southern hemisphere have the same number of days. here are the possible number of days: {set(num_days_per_year_south)}"
+    )
+
     years = np.arange(measure.time.values[0].year, measure.time.values[-1].year + 1, 1)
-    years = years[slice_start:slice_end]
+    years = years[slice_start_north:slice_end_north]
 
     ranges = (
         np.zeros(
@@ -347,6 +406,179 @@ def compute_hemisphere_ranges(measure: xarray.DataArray) -> xarray.DataArray:
             "lon": measure.lon.values,
         },
     )
+
+
+def get_range_indices_doy(measure, start: int, end: int) -> np.ndarray:
+    """
+    same as get_range_indices, but based on day of year start and end, instead of (month, day)
+    :param measure: DataArray containing 'lat' and 'lon' variables corresponding to grid.
+    :param start: int between 1 and 365. the day of year that we want to start with.
+    """
+
+    doys = measure.time.dt.dayofyear.values
+    times = measure.time.values
+    num_years = times[-1].year - times[0].year + 1
+    ranges = np.zeros((num_years, 2), dtype=int) - 1
+
+    n = 0  # n indexes over years
+    looking_for_start = True
+    for t in range(doys.shape[0]):  # for each day
+        if looking_for_start:
+            if doys[t] == start:  # if first day, then
+                looking_for_start = False
+                ranges[n, 0] = t  # set start for year to this day
+        else:  # if we already know the start
+            if doys[t] == end:  # if last day
+                looking_for_start = True
+                ranges[n, 1] = t  # set end for year n to this day
+                n += 1
+
+    if not looking_for_start:
+        ranges[-1, -1] = times.shape[0]
+
+    return ranges
+
+
+def compute_hemisphere_ranges_doy(
+    measure: xarray.DataArray, doy_mask: xarray.DataArray
+) -> xarray.DataArray:
+    """
+    replcement for compute_hemisphere_ranges for doy-masks instead of (month, day) start and end.
+    :param doy_mask: a (dayofyear, lat) mask that is 1 for summer days and 0 otherwise.
+    """
+
+    assert measure.lat.size == doy_mask.lat.size, (
+        "measure and mask don't have same lat size"
+    )
+    assert np.isclose(measure.lat.values, doy_mask.lat.values).all(), (
+        "measure and mask don't match lats"
+    )
+
+    # ranges has dimensions (year, [start, end], lat, lon)
+    ranges_array = (
+        np.zeros(
+            (
+                # time is -1 bc no austral summer in first year.
+                np.unique(measure.time.dt.year).size - 1,
+                2,
+                measure.lat.size,
+                measure.lon.size,
+            ),
+            dtype=int,
+        )
+        - 1
+    )
+    for i in range(measure.lat.size):
+        # indices of doys that make up summer
+        lat_i_mask = doy_mask.isel(lat=i).values
+        # doys that make up summer
+        doy_lat_mask = doy_mask.dayofyear.where(lat_i_mask == 1).values
+
+        ## add logic for austral summers, which wrap around.
+        # unique doys that make up summer, without NA
+        doys = doy_lat_mask[~np.isnan(doy_lat_mask)]
+        doy_jumps = np.diff(doys)  # check for jumps
+        # if there's a jump (i.e. NAs in the middle of the year)
+        if np.max(doy_jumps) > 1:
+            # the year starts right after all the nans
+            first_doy = doys[np.argmax(doy_jumps) + 1]
+            last_doy = doys[np.argmax(doy_jumps)]
+        else:
+            # in boreal summer, the doys are consecutive
+            first_doy = doys[0]
+            last_doy = doys[-1]
+
+        ranges_lat = get_range_indices_doy(measure, first_doy, last_doy)
+
+        slice_start = 0
+        slice_end = ranges_lat.size
+        start_indentified = False
+        for year_index, end_points in enumerate(ranges_lat):  # for each year
+            if (
+                -1 in end_points and not start_indentified
+            ):  # if we haven't found the start yet
+                slice_start = year_index  # slice_start indexes years
+                continue
+            elif not start_indentified:
+                start_indentified = True
+
+            if start_indentified and -1 in end_points:
+                slice_end = year_index
+                break
+
+        ranges_lat = ranges_lat[
+            slice_start:slice_end
+        ]  # get the corresponding time index slices
+
+        # remove the last year if it doesn't have 90 days. This can happen if we're using austral summer
+        # i.e. if DJF represent a year,  then we record this as the summer of Jan/Feb. So the last calendar year will miss out.
+        last_year_duration = ranges_lat[-1][1] - ranges_lat[-1][0]
+
+        # if fewer than 90 days in the last year, remove last year
+        if last_year_duration != 90:
+            ranges_lat = ranges_lat[:-1, :]
+        else:  # if boreal summer
+            # remove first year (to keep alignment with nh)
+            ranges_lat = ranges_lat[1:, :]
+
+        for j in range(measure.lon.size):
+            ranges_array[:, :, i, j] = ranges_lat
+
+    # # remove the last year if it doesn't have 90 days. This can happen if we're using austral summer
+    # # i.e. if DJF represent a year,  then we record this as the summer of Jan/Feb. So the last calendar year will miss out.
+    # last_year_durations = ranges_array[-1, 1, :, 0] - ranges_array[-1, 0, :, 0]
+
+    # # if any lats have fewer than 90 days in the last year
+    # if (last_year_durations != 90).any():
+    #     # remove last year of data
+    #     ranges_array = ranges_array[:-1, :, :, :]
+
+    # check that all years are 90 days
+    assert (
+        np.array(
+            [
+                ranges_array[t, 1, :, 0] - ranges_array[t, 0, :, 0]
+                for t in np.arange(ranges_array.shape[0])
+            ]
+        )
+        == 90
+    ).all(), "not all seasons are 90 days long"
+
+    # mark the year as the year of the *endpoint*, not the start point -------------------------------------
+    # this matter for austral summer. i.e. if DJF, then the year corresponding to February should be recorded.
+    smallest_endpoint = np.max(ranges_array[0, 1, :, 0])
+    largest_endpoint = np.min(ranges_array[-1, 1, :, 0])
+    years = np.arange(
+        measure.time.values[smallest_endpoint].year,
+        measure.time.values[largest_endpoint].year + 1,
+        1,
+    )
+    years = years[slice_start:slice_end]
+
+    start_years = np.array(
+        [measure.time.values[ind].year for ind in ranges_array[0, 1, :, 0]]
+    )
+    end_years = np.array(
+        [measure.time.values[ind].year for ind in ranges_array[-1, 1, :, 0]]
+    )
+    assert np.unique(start_years).size == 1, (
+        "check start years, esp hemisphere weirdness"
+    )
+    assert np.unique(end_years).size == 1, "check end years, esp hemisphere weirdness"
+
+    ranges_xr = xarray.DataArray(
+        data=ranges_array,
+        dims=["year", "end_points", "lat", "lon"],
+        coords={
+            "year": years,
+            "end_points": ["start", "finish"],
+            "lat": measure.lat.values,
+            "lon": measure.lon.values,
+        },
+    )
+
+    # return value
+    return ranges_xr
 
 
 def build_doy_map(times: np.ndarray) -> np.ndarray:
@@ -445,9 +677,13 @@ def compute_heatwave_metrics(
     return output
 
 
-def compute_heatwave_metrics_wrapper(measure, threshold, doy_map, hw_definitions):
-    season_ranges = compute_hemisphere_ranges(measure)
-
+def compute_heatwave_metrics_wrapper(
+    measure, threshold, doy_map, hw_definitions, season_ranges
+):
+    # measure will be a "chunk" from xr.map_blocks. Subset to the lat/lon of this chunk.
+    # i think the .sel operators aren't thread safe for dask, so make sure to use single threaded.
+    threshold = threshold.sel(lat=measure.lat, lon=measure.lon)
+    season_ranges = season_ranges.sel(lat=measure.lat, lon=measure.lon)
     def_coords = xarray.DataArray(
         [f"{hw_def[0]}-{hw_def[1]}-{hw_def[2]}" for hw_def in hw_definitions],
         dims=["definition"],
@@ -492,8 +728,12 @@ def compute_individual_metrics(
     measure: xarray.DataArray,
     threshold: xarray.DataArray,
     hw_definitions: list,
+    use_doy=False,
+    doy_mask=None,
     include_threshold: bool = True,
     check_variables: bool = True,
+    start=(5, 1),
+    end=(10, 1),
 ) -> xarray.Dataset:
     """
     Computes HWN, HWF, HWD, and HWA heatwave metrics for an individual parameter configuration of measure, threshold, and definition.
@@ -509,6 +749,8 @@ def compute_individual_metrics(
     :type threshold: xarray.DataArray
     :param hw_definitions: Heatwave definitions to calculate metrics for. See the function description for how to generate definitions.
     :type hw_definitions: list[tuple]
+    :param use_doy: flag for whether summer season is defined as (month,day) or dayofyear.
+    :param doy_mask: ignored if use_doy is False. see compute_hemipshere_ranges_doy.
     :param include_threshold: (Optional) Whether or not to include the threshold DataArray in the aggregated output dataset. Default is True.
     :type include_threshold: bool
     :param check_variables: (Optional) Whether or not to check if measure is compatable with the threshold. Default is True.
@@ -534,7 +776,11 @@ def compute_individual_metrics(
             if entry != "":
                 combined_history += f"(Threshold) {entry}\n"
 
-    season_ranges = compute_hemisphere_ranges(measure)
+    if use_doy:
+        assert doy_mask is not None, "doy_mask needed if use_doy = True"
+        season_ranges = compute_hemisphere_ranges_doy(measure, doy_mask)
+    else:
+        season_ranges = compute_hemisphere_ranges(measure, start=start, end=end)
 
     times = measure.time.values
     doy_map = xarray.DataArray(data=build_doy_map(times), coords={"time": times})
@@ -569,9 +815,7 @@ def compute_individual_metrics(
         compute_heatwave_metrics_wrapper,
         obj=measure,
         args=[threshold, doy_map],
-        kwargs={
-            "hw_definitions": hw_definitions,
-        },
+        kwargs={"hw_definitions": hw_definitions, "season_ranges": season_ranges},
         template=template,
     )
 
@@ -650,8 +894,12 @@ def compute_group_metrics(
     measures: xarray.Dataset,
     thresholds: xarray.Dataset,
     hw_definitions: list,
+    use_doy=False,
+    doy_mask=None,
     include_threshold: bool = False,
     check_variables: bool = True,
+    start=(5, 1),
+    end=(10, 1),
 ) -> xarray.Dataset:
     metric_sets = []
     for measure_name in list(measures.keys()):
@@ -666,8 +914,12 @@ def compute_group_metrics(
                     measure,
                     threshold,
                     hw_definitions,
+                    use_doy,
+                    doy_mask,
                     include_threshold,
                     check_variables,
+                    start,
+                    end,
                 )
                 var_renames = {
                     name: f"{measure_name}.{threshold_name}.{name}"
@@ -689,6 +941,8 @@ def compute_metrics_io(
     measure_var: str,
     threshold_path: str,
     hw_definitions: list,
+    use_doy=False,
+    doy_mask=None,
     include_threshold: bool = False,
     override_threshold_var: str = None,
 ) -> None:
@@ -754,6 +1008,8 @@ def compute_metrics_io(
         measure_data,
         threshold_data,
         hw_definitions,
+        use_doy,
+        doy_mask,
         include_threshold=include_threshold,
         check_variables=check_variables,
     )
