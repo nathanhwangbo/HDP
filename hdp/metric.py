@@ -101,10 +101,10 @@ def heatwave_frequency(hw_ts: np.ndarray, season_ranges: np.ndarray) -> np.ndarr
     :return: Number of heatwave days per heatwave season.
     :rtype: np.ndarray
     """
-    output = np.zeros(season_ranges.shape[0], dtype=nb.int64)
+    output = np.zeros(season_ranges.shape[0], dtype=np.int64)
     for y in range(season_ranges.shape[0]):
         end_points = season_ranges[y]
-        output[y] = np.sum(hw_ts[end_points[0] : end_points[1]] > 0, dtype=nb.int64)
+        output[y] = np.sum(hw_ts[end_points[0] : end_points[1]] > 0, dtype=np.int64)
     return output
 
 
@@ -121,7 +121,7 @@ def heatwave_duration(hw_ts: np.ndarray, season_ranges: np.ndarray) -> np.ndarra
     :return: Length of longest heatwave per heatwave season.
     :rtype: np.ndarray
     """
-    output = np.zeros(season_ranges.shape[0], dtype=nb.int64)
+    output = np.zeros(season_ranges.shape[0], dtype=np.int64)
     for y in range(season_ranges.shape[0]):
         end_points = season_ranges[y]
         hw_ts_slice = hw_ts[end_points[0] : end_points[1]]
@@ -132,7 +132,7 @@ def heatwave_duration(hw_ts: np.ndarray, season_ranges: np.ndarray) -> np.ndarra
         else:
             unique_indices = unique_indices[1:]
 
-        hw_lengths = np.zeros(unique_indices.size, dtype=nb.int64)
+        hw_lengths = np.zeros(unique_indices.size, dtype=np.int64)
         for index, value in enumerate(unique_indices):
             if value != 0:
                 for day in hw_ts_slice:
@@ -156,7 +156,7 @@ def heatwave_average(hw_ts: np.ndarray, season_ranges: np.ndarray) -> np.ndarray
     :return: Average heatwave length per heatwave season.
     :rtype: np.ndarray
     """
-    output = np.zeros(season_ranges.shape[0], dtype=nb.float64)
+    output = np.zeros(season_ranges.shape[0], dtype=np.float64)
     for y in range(season_ranges.shape[0]):
         end_points = season_ranges[y]
         hw_ts_slice = hw_ts[end_points[0] : end_points[1]]
@@ -167,7 +167,7 @@ def heatwave_average(hw_ts: np.ndarray, season_ranges: np.ndarray) -> np.ndarray
         else:
             unique_indices = unique_indices[1:]
 
-        hw_lengths = np.zeros(unique_indices.size, dtype=nb.int64)
+        hw_lengths = np.zeros(unique_indices.size, dtype=np.int64)
         for index, value in enumerate(unique_indices):
             if value != 0:
                 for day in hw_ts_slice:
@@ -192,7 +192,7 @@ def heatwave_avi(hw_ts_intensity: np.ndarray, season_ranges: np.ndarray) -> np.n
     :rtype: np.ndarray
     """
     # output of size n_years
-    output = np.zeros(season_ranges.shape[0], dtype=nb.float64)
+    output = np.zeros(season_ranges.shape[0], dtype=np.float64)
 
     for y in range(season_ranges.shape[0]):
         end_points = season_ranges[y]
@@ -250,6 +250,31 @@ def heatwave_ava(
             hw_ts_anom_slice = hw_ts_slice - threshold_slice
             # ignores the masked values
             output[y] = np.nanmean(hw_ts_anom_slice)
+    return output
+
+
+@nb.njit
+def season_max(measure: np.ndarray, season_ranges: np.ndarray) -> np.ndarray:
+    """
+    Measures the max temperature of the season each year.
+    this is sometimes used as a measure of heat extreme intensity. notably (for this package), it's not a heatwave metric.
+
+    :param measure: Timeseries of heat measurement.
+    :type measurey: np.ndarray
+    :param season_ranges: Range of array indices, corresponding to heatwave season, in indexed heatwave day timeseries to count.
+    :type season_ranges: np.ndarray
+    :return: temperature of hottest day per heatwave season.
+    :rtype: np.ndarray
+    """
+    # output of size n_years
+    output = np.zeros(season_ranges.shape[0], dtype=np.float64)
+
+    for y in range(season_ranges.shape[0]):
+        end_points = season_ranges[y]
+        measure_slice = measure[end_points[0] : end_points[1]]
+
+        output[y] = np.nanmax(measure_slice)
+
     return output
 
 
@@ -612,7 +637,7 @@ def indicate_hot_days(
     :return: Boolean array of days in measure that exceed the threshold.
     :rtype: np.ndarray
     """
-    output = np.zeros(measure.shape, dtype=nb.boolean)
+    output = np.zeros(measure.shape, dtype=np.bool)
     for t in range(measure.size):
         doy = doy_map[t]
         if measure[t] > threshold[doy]:
@@ -666,7 +691,10 @@ def compute_heatwave_metrics(
     hw_avi = heatwave_avi(hw_ts_intensity, season_ranges)
     hw_ava = heatwave_ava(hw_ts_intensity, season_ranges, threshold, doy_map)
 
-    output = np.zeros((6,) + hwf.shape, dtype=nb.float64)
+    # also getting the hottest day of the season (not a heatwave metric)
+    hot_season_max = season_max(measure, season_ranges)
+
+    output = np.zeros((7,) + hwf.shape, dtype=nb.float64)
     output[0] = hwf
     output[1] = hwn
     output[2] = hwd
@@ -674,6 +702,8 @@ def compute_heatwave_metrics(
 
     output[4] = hw_avi
     output[5] = hw_ava
+
+    output[6] = hot_season_max
     return output
 
 
@@ -717,7 +747,7 @@ def compute_heatwave_metrics_wrapper(
                 ],
                 output_core_dims=[["metric", "year"]],
                 output_dtypes=[float],
-                dask_gufunc_kwargs=dict(output_sizes=dict(metric=6)),
+                dask_gufunc_kwargs=dict(output_sizes=dict(metric=7)),
             )
             def_datasets.append(metric_data)
         perc_datasets.append(xarray.concat(def_datasets, dim=def_coords))
@@ -796,8 +826,8 @@ def compute_individual_metrics(
             da_chunks.append(measure.chunks[index])
 
     da_dims.extend(["metric", "year"])
-    da_shape.extend([6, season_ranges.year.size])
-    da_chunks.extend([(6), (season_ranges.year.size)])
+    da_shape.extend([7, season_ranges.year.size])
+    da_chunks.extend([(7), (season_ranges.year.size)])
 
     da_coords = {**measure.coords}
     da_coords.pop("time", None)
@@ -827,6 +857,7 @@ def compute_individual_metrics(
             HWA=metric_data.sel(metric=3),
             AVI=metric_data.sel(metric=4),
             AVA=metric_data.sel(metric=5),
+            MAX=metric_data.sel(metric=6),
         )
     )
 
@@ -875,6 +906,11 @@ def compute_individual_metrics(
         "units": "avg anomalies",
         "long_name": "Heatwave Average Intensity Anomalies",
         "description": "Average daily intensity anomalies of heatwaves during a heatwave season",
+    }
+    ds["MAX"].attrs |= {
+        "units": "Max anomalies",
+        "long_name": "Seasonal Max Intensity Anomalies",
+        "description": "Max daily intensity anomalies during a heatwave season",
     }
     ds["percentile"].attrs |= {"range": "(0, 1)"}
     ds["definition"].attrs |= {
